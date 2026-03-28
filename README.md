@@ -1,57 +1,90 @@
-# zen-sync
+<p align="center">
+  <h1 align="center">zen-sync</h1>
+  <p align="center">Sync Zen Browser spaces, tabs & sessions across devices via SSH</p>
+</p>
 
-Sync Zen Browser spaces, tabs, and sessions across devices via SSH.
+<p align="center">
+  <a href="#install">Install</a> &bull;
+  <a href="#usage">Usage</a> &bull;
+  <a href="#how-it-works">How it works</a> &bull;
+  <a href="LICENSE">License</a>
+</p>
+
+---
+
+Zen Browser doesn't sync spaces or tabs across devices yet. **zen-sync** fills that gap — push your entire browsing session from one machine to another in seconds.
 
 ## Install
 
 ```bash
-sudo curl -fsSL https://raw.githubusercontent.com/enisbudancamanak/zen-sync/main/zen-sync -o /usr/local/bin/zen-sync && sudo chmod +x /usr/local/bin/zen-sync
+curl -fsSL https://raw.githubusercontent.com/enisbudancamanak/zen-sync/main/zen-sync -o ~/.local/bin/zen-sync && chmod +x ~/.local/bin/zen-sync
+```
+
+Then run the setup wizard:
+
+```bash
 zen-sync init
 ```
 
-## Requirements
+### Requirements
 
 - Zen Browser (same version on both devices)
 - SSH access between devices
-- `rsync` (only for `--full` sync)
+- `rsync` (only for `--full` mode)
 
-## Commands
+## Usage
 
-| Command | Description |
-|---------|-------------|
-| `zen-sync init` | Interactive setup - detects profiles automatically |
-| `zen-sync push` | Push local spaces & tabs to remote (light, ~10s) |
-| `zen-sync pull` | Pull remote spaces & tabs to local (light, ~10s) |
-| `zen-sync push --full` | Full profile sync via rsync (slower, more complete) |
-| `zen-sync pull --full` | Full profile pull via rsync |
-| `zen-sync status` | Compare spaces on both devices |
+> **Always close Zen Browser on the target device before syncing.**
+
+```bash
+# Push local session to remote device
+zen-sync push
+
+# Pull remote session to local device
+zen-sync pull
+
+# Compare spaces on both devices
+zen-sync status
+
+# Full profile sync (first-time setup or troubleshooting)
+zen-sync push --full
+zen-sync pull --full
+```
 
 ## How it works
 
 ### Light sync (default)
-Copies only the essential session files:
-- `zen-sessions.jsonlz4` — Space definitions and tab assignments
-- `sessionstore-backups/recovery.jsonlz4` — Active session with all tabs
-- `sessionstore-backups/recovery.baklz4` — Session backup
-- `sessionstore-backups/previous.jsonlz4` — Previous session
-- `prefs.js` — Active workspace and preferences
-- `containers.json` — Container tab configuration
+
+Copies only the files that matter:
+
+| File | What it contains |
+|------|-----------------|
+| `zen-sessions.jsonlz4` | Space definitions & tab-to-space assignments |
+| `sessionstore-backups/recovery.jsonlz4` | Active session with all open tabs |
+| `sessionstore-backups/recovery.baklz4` | Session backup |
+| `sessionstore-backups/previous.jsonlz4` | Previous session |
+| `prefs.js` | Active workspace & preferences |
+| `containers.json` | Container tab configuration |
+
+This takes ~10 seconds over a local network.
 
 ### Full sync (`--full`)
-Uses `rsync` to sync the entire profile directory, excluding caches. Useful for first-time setup or when light sync misses something.
 
-## Important
+Uses `rsync` to transfer the entire profile directory (excluding caches). Useful for initial setup or when light sync isn't enough — for example, syncing extensions, bookmarks, or passwords that aren't covered by light sync.
 
-- **Close Zen Browser** on the target device before syncing
+## Good to know
+
+- Config lives in `~/.config/zen-sync/config`
+- Profile paths are auto-detected during `zen-sync init`
 - Both devices should run the **same Zen version** to avoid compatibility issues
-- Config is stored in `~/.config/zen-sync/config`
+- Zen stores spaces in `zen-sessions.jsonlz4` (Mozilla LZ4 compressed JSON) and tabs in the sessionstore — both need to be in sync
 
-## How Zen stores data
+## Background
 
-Zen Browser stores workspaces/spaces in `zen-sessions.jsonlz4` (Mozilla's LZ4 compressed JSON). The actual tab session lives in `sessionstore-backups/recovery.jsonlz4`. Both files need to be in sync for spaces and tabs to transfer correctly.
+Zen Browser (based on Firefox) doesn't offer cross-device sync for its custom features like spaces and workspaces. Firefox Sync handles bookmarks, passwords, and history, but not Zen-specific data.
 
-Unlike Firefox Sync, this tool transfers the raw profile data, similar to sharing a profile folder across dual-boot systems.
+This tool works similarly to [sharing a profile folder on a dual-boot system](https://github.com/zen-browser/desktop/discussions/2400) — transferring the raw session files between machines.
 
 ## License
 
-MIT
+[MIT](LICENSE)
