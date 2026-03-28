@@ -34,7 +34,6 @@ zen-sync init
 - Linux (tested on Arch Linux with Wayland/Hyprland)
 - Zen Browser (same version on both devices)
 - SSH access between devices (ideally with key-based auth via `ssh-copy-id`)
-- `rsync` (only for `--full` mode)
 - `python3` + `liblz4` (only for `zen-sync status`)
 
 ## Usage
@@ -52,10 +51,6 @@ zen-sync pull --restart
 
 # Compare spaces on both devices
 zen-sync status
-
-# Full profile sync (first-time setup or troubleshooting)
-zen-sync push --full
-zen-sync pull --full
 ```
 
 ### Recommended workflow
@@ -85,10 +80,6 @@ Copies only the files that matter:
 | `containers.json` | Container tab configuration |
 
 This takes ~10 seconds over a local network.
-
-### Full sync (`--full`)
-
-Uses `rsync` to transfer the entire profile directory (excluding caches). Useful for initial setup or when light sync isn't enough — for example, syncing extensions, bookmarks, or passwords that aren't covered by light sync.
 
 ## Limitations
 

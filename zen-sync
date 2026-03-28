@@ -5,62 +5,102 @@ set -euo pipefail
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/zen-sync"
 CONFIG_FILE="$CONFIG_DIR/config"
 
-# ─── Helpers ──────────────────────────────────────────────────────────
-die()  { echo "error: $*" >&2; exit 1; }
-info() { echo ":: $*"; }
-warn() { echo "⚠  $*" >&2; }
+# ─── Colors & UI ─────────────────────────────────────────────────────
+R="\033[0m"
+B="\033[1m"
+D="\033[2m"
+PURPLE="\033[38;2;147;130;220m"
+GREEN="\033[38;2;130;200;160m"
+RED="\033[38;2;210;100;120m"
+YELLOW="\033[38;2;220;180;100m"
+GRAY="\033[38;2;100;100;110m"
+WHITE="\033[38;2;200;200;210m"
+
+die()  { printf "${RED}${B} error${R} ${WHITE}%s${R}\n" "$*" >&2; exit 1; }
+info() { printf "${PURPLE}${B}  %s${R}\n" "$*"; }
+ok()   { printf "${GREEN}  ✓${R} ${WHITE}%s${R}\n" "$*"; }
+fail() { printf "${RED}  ✗${R} ${WHITE}%s${R}\n" "$*" >&2; }
+step() { printf "${PURPLE}%s${R} ${D}%s${R}\n" "$1" "$2"; }
+dim()  { printf "${GRAY}%s${R}\n" "$*"; }
+
+header() {
+    local label="zen-sync $1"
+    local inner=33
+    local pad=$(( (inner - ${#label}) / 2 ))
+    local rpad=$(( inner - ${#label} - pad ))
+    printf "\n"
+    printf "${PURPLE}${B}  ╭─────────────────────────────────╮${R}\n"
+    printf "${PURPLE}${B}  │${R}${B}%*s%s%*s${PURPLE}${B}│${R}\n" "$((pad))" "" "$label" "$((rpad))" ""
+    printf "${PURPLE}${B}  ╰─────────────────────────────────╯${R}\n"
+    printf "\n"
+}
+
+spinner() {
+    local pid=$1 msg=$2
+    local frames=("⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏")
+    local i=0
+    while kill -0 "$pid" 2>/dev/null; do
+        printf "\r${PURPLE}  ${frames[$i]}${R} ${D}%s${R}" "$msg"
+        i=$(( (i + 1) % ${#frames[@]} ))
+        sleep 0.1
+    done
+    printf "\r\033[2K"
+}
+
+progress_bar() {
+    local current=$1 total=$2 width=20
+    local pct=$(( current * 100 / total ))
+    local filled=$(( current * width / total ))
+    local empty=$(( width - filled ))
+    local bar=""
+    for ((i=0; i<filled; i++)); do bar+="█"; done
+    for ((i=0; i<empty; i++)); do bar+="░"; done
+    printf "\r${PURPLE}  [${GREEN}%s${GRAY}%s${PURPLE}]${R} ${D}%d/%d${R}" \
+        "${bar:0:$filled}" "${bar:$filled}" "$current" "$total"
+}
 
 usage() {
-    cat <<EOF
-zen-sync - sync Zen Browser spaces & tabs across devices
-
-Usage:
-    zen-sync push              Push local session to remote device
-    zen-sync pull              Pull remote session to local device
-    zen-sync push --full       Full profile sync via rsync (slower, more complete)
-    zen-sync pull --full       Full profile pull via rsync
-    zen-sync status            Show spaces on both devices
-    zen-sync init              Configure local and remote profiles
-    zen-sync help              Show this help
-
-Options:
-    --restart                  Auto-close Zen on target, sync, and reopen it
-
-Notes:
-    - Zen Browser must be CLOSED on the target device before push/pull
-    - Use --restart to handle this automatically
-    - Config is stored in $CONFIG_DIR/config
-EOF
+    header "help"
+    printf "${B}  Usage:${R}\n"
+    printf "    ${WHITE}zen-sync${R} ${GREEN}push${R}              ${D}Push session to remote${R}\n"
+    printf "    ${WHITE}zen-sync${R} ${GREEN}pull${R}              ${D}Pull session from remote${R}\n"
+    printf "    ${WHITE}zen-sync${R} ${GREEN}push --restart${R}    ${D}Close Zen, sync, reopen${R}\n"
+    printf "    ${WHITE}zen-sync${R} ${YELLOW}status${R}            ${D}Compare both devices${R}\n"
+    printf "    ${WHITE}zen-sync${R} ${YELLOW}init${R}              ${D}Setup wizard${R}\n"
+    printf "\n"
+    printf "  ${D}Config: %s${R}\n" "$CONFIG_DIR/config"
+    printf "\n"
     exit 0
 }
 
 # ─── Zen process management ──────────────────────────────────────────
 zen_close_remote() {
     local remote="$1"
-    if ssh "$remote" 'pgrep -f zen-browser >/dev/null 2>&1'; then
-        info "Closing Zen on remote..."
-        ssh -o ConnectTimeout=5 "$remote" 'nohup bash -c "pkill -SIGTERM -f zen-browser; pkill -SIGTERM zen" >/dev/null 2>&1 </dev/null; exit 0' || true
+    if ssh "$remote" 'pgrep -x zen-bin >/dev/null 2>&1'; then
+        step "  ◼" "Closing Zen on remote..."
+        ssh -o ConnectTimeout=5 "$remote" 'kill -SIGTERM $(pgrep -x zen-bin | head -1) 2>/dev/null; exit 0' || true
         sleep 5
     fi
 }
 
 zen_open_remote() {
     local remote="$1"
-    info "Reopening Zen on remote..."
+    step "  ▶" "Reopening Zen on remote..."
     ssh "$remote" 'WAYLAND_DISPLAY=wayland-1 DISPLAY=:0 XDG_RUNTIME_DIR=/run/user/$(id -u) nohup zen-browser >/dev/null 2>&1 </dev/null &; exit 0' || true
 }
 
 zen_close_local() {
-    if pgrep -f zen-browser >/dev/null 2>&1; then
-        info "Closing Zen locally..."
-        pkill -SIGTERM -f zen-browser 2>/dev/null || true
-        pkill -SIGTERM zen 2>/dev/null || true
+    local pids
+    pids=$(pgrep -x zen-bin 2>/dev/null || true)
+    if [[ -n "$pids" ]]; then
+        step "  ◼" "Closing Zen locally..."
+        kill -SIGTERM $(echo "$pids" | head -1) 2>/dev/null || true
         sleep 3
     fi
 }
 
 zen_open_local() {
-    info "Reopening Zen locally..."
+    step "  ▶" "Reopening Zen locally..."
     nohup zen-browser >/dev/null 2>&1 &
 }
 
@@ -81,7 +121,6 @@ find_local_profile() {
     done < <(find "$zen_dir" -maxdepth 1 -type d -name "*.Default (release)" 2>/dev/null)
 
     if [[ ${#profiles[@]} -eq 0 ]]; then
-        # Try any profile with zen-sessions
         while IFS= read -r d; do
             [[ -f "$d/zen-sessions.jsonlz4" ]] && profiles+=("$d")
         done < <(find "$zen_dir" -maxdepth 1 -type d 2>/dev/null)
@@ -101,41 +140,31 @@ find_local_profile() {
     fi
 }
 
-find_remote_profile() {
-    local host="$1" user="$2"
-    ssh "$user@$host" 'find ~/.zen -maxdepth 1 -type d -name "*.Default (release)" 2>/dev/null | head -1'
-}
-
 cmd_init() {
     mkdir -p "$CONFIG_DIR"
 
-    info "Zen Sync Setup"
-    echo ""
+    header "init"
 
-    # Remote host
-    read -rp "Remote host (IP or hostname): " host
-    read -rp "Remote user [$USER]: " user
+    read -rp "  Remote host (IP or hostname): " host
+    read -rp "  Remote user [$USER]: " user
     user="${user:-$USER}"
 
-    # Test SSH
-    info "Testing SSH connection..."
+    step "  ⟳" "Testing SSH..."
     ssh -o ConnectTimeout=5 "$user@$host" "echo ok" >/dev/null 2>&1 \
-        || die "cannot connect to $user@$host - check SSH"
+        || die "cannot connect to $user@$host"
+    ok "SSH connected"
 
-    # Find local profile
-    info "Finding local Zen profile..."
+    step "  ⟳" "Finding local profile..."
     local local_profile
     local_profile=$(find_local_profile)
-    info "Local: $local_profile"
+    ok "Local: $(basename "$local_profile")"
 
-    # Find remote profile
-    info "Finding remote Zen profile..."
+    step "  ⟳" "Finding remote profile..."
     local remote_profile
     remote_profile=$(ssh "$user@$host" 'find ~/.zen -maxdepth 1 -type d -name "*.Default (release)" 2>/dev/null | head -1')
     [[ -n "$remote_profile" ]] || die "no Zen profile found on remote"
-    info "Remote: $remote_profile"
+    ok "Remote: $(basename "$remote_profile")"
 
-    # Write config
     cat > "$CONFIG_FILE" <<CONF
 REMOTE_HOST="$host"
 REMOTE_USER="$user"
@@ -143,9 +172,10 @@ LOCAL_PROFILE="$local_profile"
 REMOTE_PROFILE="$remote_profile"
 CONF
 
-    info "Config saved to $CONFIG_FILE"
-    echo ""
-    info "Ready! Use 'zen-sync push' or 'zen-sync pull'"
+    printf "\n"
+    ok "Config saved"
+    dim "  Use 'zen-sync push' or 'zen-sync pull' to start syncing"
+    printf "\n"
 }
 
 # ─── Sync files list ─────────────────────────────────────────────────
@@ -159,86 +189,66 @@ SYNC_FILES=(
     "containers.json"
 )
 
-RSYNC_EXCLUDES=(
-    "cache2/"
-    "startupCache/"
-    "shader-cache/"
-    "thumbnails/"
-    "safebrowsing/"
-    "datareporting/"
-    "crashes/"
-    "minidumps/"
-    "storage/default/*/cache/"
-)
-
 # ─── Push ─────────────────────────────────────────────────────────────
 cmd_push() {
     load_config
-    local full=false restart=false
+    local restart=false
     for arg in "$@"; do
-        [[ "$arg" == "--full" ]] && full=true
         [[ "$arg" == "--restart" ]] && restart=true
     done
 
     local remote="$REMOTE_USER@$REMOTE_HOST"
 
+    header "push"
+    printf "  ${D}local${R} ${PURPLE}→${R} ${WHITE}${B}%s${R}\n\n" "$REMOTE_HOST"
+
     $restart && zen_close_remote "$remote"
 
-    if $full; then
-        info "Full sync -> $remote"
-        local excludes=()
-        for e in "${RSYNC_EXCLUDES[@]}"; do
-            excludes+=(--exclude="$e")
-        done
-        rsync -avz --progress --delete "${excludes[@]}" \
-            "$LOCAL_PROFILE/" "$remote:$REMOTE_PROFILE/"
-    else
-        info "Light sync -> $remote"
-        for f in "${SYNC_FILES[@]}"; do
-            local src="$LOCAL_PROFILE/$f"
-            if [[ -f "$src" ]]; then
-                scp -q "$src" "$remote:$REMOTE_PROFILE/$f" && echo "  ✓ $f" || warn "  ✗ $f"
+    for f in "${SYNC_FILES[@]}"; do
+        local src="$LOCAL_PROFILE/$f"
+        if [[ -f "$src" ]]; then
+            if scp -q "$src" "$remote:$REMOTE_PROFILE/$f" 2>/dev/null; then
+                ok "$f"
+            else
+                fail "$f"
             fi
-        done
-    fi
+        fi
+    done
 
+    printf "\n"
     $restart && zen_open_remote "$remote"
 
-    info "Done!"
+    printf "\n  ${GREEN}${B}✓ Sync complete${R}\n\n"
 }
 
 # ─── Pull ─────────────────────────────────────────────────────────────
 cmd_pull() {
     load_config
-    local full=false restart=false
+    local restart=false
     for arg in "$@"; do
-        [[ "$arg" == "--full" ]] && full=true
         [[ "$arg" == "--restart" ]] && restart=true
     done
 
     local remote="$REMOTE_USER@$REMOTE_HOST"
 
+    header "pull"
+    printf "  ${WHITE}${B}%s${R} ${PURPLE}←${R} ${D}local${R}\n\n" "$REMOTE_HOST"
+
     $restart && zen_close_local
 
-    if $full; then
-        info "Full pull <- $remote"
-        local excludes=()
-        for e in "${RSYNC_EXCLUDES[@]}"; do
-            excludes+=(--exclude="$e")
-        done
-        rsync -avz --progress --delete "${excludes[@]}" \
-            "$remote:$REMOTE_PROFILE/" "$LOCAL_PROFILE/"
-    else
-        info "Light pull <- $remote"
-        for f in "${SYNC_FILES[@]}"; do
-            local dst="$LOCAL_PROFILE/$f"
-            scp -q "$remote:$REMOTE_PROFILE/$f" "$dst" 2>/dev/null && echo "  ✓ $f" || warn "  ✗ $f (not found)"
-        done
-    fi
+    for f in "${SYNC_FILES[@]}"; do
+        local dst="$LOCAL_PROFILE/$f"
+        if scp -q "$remote:$REMOTE_PROFILE/$f" "$dst" 2>/dev/null; then
+            ok "$f"
+        else
+            fail "$f (not found)"
+        fi
+    done
 
+    printf "\n"
     $restart && zen_open_local
 
-    info "Done!"
+    printf "\n  ${GREEN}${B}✓ Sync complete${R}\n\n"
 }
 
 # ─── Status ───────────────────────────────────────────────────────────
@@ -254,7 +264,8 @@ lib.LZ4_decompress_safe(data[12:], dst, len(data)-12, size)
 j = json.loads(dst.raw[:size])
 print(f'{len(j[\"spaces\"])} spaces, {len(j[\"tabs\"])} tabs')
 for s in sorted(j['spaces'], key=lambda x: x.get('position', 99999)):
-    print(f'  {s.get(\"position\",\"?\"):>5}  {s[\"name\"]}')
+    icon = s.get('icon', ' ')
+    print(f'  {icon}  {s[\"name\"]}')
 " "$1"
 }
 
@@ -262,16 +273,21 @@ cmd_status() {
     load_config
     local remote="$REMOTE_USER@$REMOTE_HOST"
 
-    echo "LOCAL ($LOCAL_PROFILE):"
+    header "status"
+
+    printf "  ${PURPLE}${B}LOCAL${R}\n"
+    printf "  ${D}%s${R}\n" "$LOCAL_PROFILE"
     read_spaces "$LOCAL_PROFILE/zen-sessions.jsonlz4"
 
-    echo ""
-    echo "REMOTE ($REMOTE_HOST:$REMOTE_PROFILE):"
+    printf "\n"
+    printf "  ${PURPLE}${B}REMOTE${R} ${D}(%s)${R}\n" "$REMOTE_HOST"
+    printf "  ${D}%s${R}\n" "$REMOTE_PROFILE"
     local tmp=$(mktemp)
     scp -q "$remote:$REMOTE_PROFILE/zen-sessions.jsonlz4" "$tmp" 2>/dev/null \
         && read_spaces "$tmp" \
-        || warn "could not read remote sessions"
+        || fail "could not read remote sessions"
     rm -f "$tmp"
+    printf "\n"
 }
 
 # ─── Main ─────────────────────────────────────────────────────────────
