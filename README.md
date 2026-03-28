@@ -5,9 +5,7 @@ Sync Zen Browser spaces, tabs, and sessions across devices via SSH.
 ## Install
 
 ```bash
-git clone https://github.com/enisbudancamanak/zen-sync
-cd zen-sync
-./install.sh
+sudo curl -fsSL https://raw.githubusercontent.com/enisbudancamanak/zen-sync/main/zen-sync -o /usr/local/bin/zen-sync && sudo chmod +x /usr/local/bin/zen-sync
 zen-sync init
 ```
 
