@@ -20,7 +20,7 @@ Zen Browser doesn't sync spaces or tabs across devices yet. **zen-sync** fills t
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/enisbudancamanak/zen-sync/main/zen-sync -o ~/.local/bin/zen-sync && chmod +x ~/.local/bin/zen-sync
+curl -fsSL https://raw.githubusercontent.com/enisbudancamanak/zen-sync/main/install.sh | bash
 ```
 
 Then run the setup wizard:
