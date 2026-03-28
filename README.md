@@ -2,28 +2,20 @@
 
 Sync Zen Browser spaces, tabs, and sessions across devices via SSH.
 
-## Quick Start
+## Install
 
 ```bash
-# Install
-git clone https://github.com/officiallyeno/zen-sync
-sudo ln -s "$(pwd)/zen-sync/zen-sync" /usr/local/bin/zen-sync
-
-# Setup
+git clone https://github.com/enisbudancamanak/zen-sync
+cd zen-sync
+./install.sh
 zen-sync init
-
-# Push your session to another device
-zen-sync push
-
-# Pull session from another device
-zen-sync pull
 ```
 
 ## Requirements
 
 - Zen Browser (same version on both devices)
 - SSH access between devices
-- Python 3 with system `liblz4` (for `zen-sync status`)
+- `rsync` (only for `--full` sync)
 
 ## Commands
 
