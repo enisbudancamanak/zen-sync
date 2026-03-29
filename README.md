@@ -59,7 +59,8 @@ During `zen-sync init`, you choose how devices communicate:
 **R2** stores your session encrypted (using [age](https://github.com/FiloSottile/age)) in a Cloudflare R2 bucket. Push from one device, pull from another whenever you want. Devices don't need to be online at the same time. Free tier (10GB) is more than enough.
 
 <details>
-<summary>R2 setup</summary>
+<summary><strong>📦 R2 setup guide</strong></summary>
+<br>
 
 1. Create a free [Cloudflare](https://dash.cloudflare.com) account
 2. Go to **R2 Object Storage** and create a bucket (e.g. `zen-sync`)
@@ -72,7 +73,8 @@ During `zen-sync init`, you choose how devices communicate:
 </details>
 
 <details>
-<summary>SSH setup</summary>
+<summary><strong>🔗 SSH setup guide</strong></summary>
+<br>
 
 1. Make sure both devices can reach each other via SSH
 2. Set up key-based auth for passwordless access: `ssh-copy-id user@other-device`
