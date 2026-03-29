@@ -35,30 +35,6 @@ header() {
     printf "\n"
 }
 
-spinner() {
-    local pid=$1 msg=$2
-    local frames=("⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏")
-    local i=0
-    while kill -0 "$pid" 2>/dev/null; do
-        printf "\r${PURPLE}  ${frames[$i]}${R} ${D}%s${R}" "$msg"
-        i=$(( (i + 1) % ${#frames[@]} ))
-        sleep 0.1
-    done
-    printf "\r\033[2K"
-}
-
-progress_bar() {
-    local current=$1 total=$2 width=20
-    local pct=$(( current * 100 / total ))
-    local filled=$(( current * width / total ))
-    local empty=$(( width - filled ))
-    local bar=""
-    for ((i=0; i<filled; i++)); do bar+="█"; done
-    for ((i=0; i<empty; i++)); do bar+="░"; done
-    printf "\r${PURPLE}  [${GREEN}%s${GRAY}%s${PURPLE}]${R} ${D}%d/%d${R}" \
-        "${bar:0:$filled}" "${bar:$filled}" "$current" "$total"
-}
-
 usage() {
     header "help"
     printf "${B}  Usage:${R}\n"
@@ -69,6 +45,7 @@ usage() {
     printf "    ${WHITE}zen-sync${R} ${YELLOW}status${R}            ${D}Compare both devices${R}\n"
     printf "    ${WHITE}zen-sync${R} ${YELLOW}init${R}              ${D}Setup wizard${R}\n"
     printf "\n"
+    printf "  ${D}Modes: ssh (direct device-to-device) or r2 (Cloudflare R2 cloud)${R}\n"
     printf "  ${D}Config: %s${R}\n" "$CONFIG_DIR/config"
     printf "\n"
     exit 0
@@ -105,11 +82,49 @@ zen_open_local() {
     nohup zen-browser >/dev/null 2>&1 &
 }
 
+# ─── Resolve script directory ────────────────────────────────────────
+resolve_script_dir() {
+    local dir
+    dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    # Follow symlink if needed
+    if [[ -L "${BASH_SOURCE[0]}" ]]; then
+        dir="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+    fi
+    echo "$dir"
+}
+
+SCRIPT_DIR="$(resolve_script_dir)"
+
+find_py() {
+    local name="$1"
+    local path="$SCRIPT_DIR/$name"
+    [[ -f "$path" ]] && { echo "$path"; return; }
+    path="$HOME/.local/lib/zen-sync/$name"
+    [[ -f "$path" ]] && { echo "$path"; return; }
+    die "$name not found. Re-run install."
+}
+
 # ─── Config management ────────────────────────────────────────────────
 load_config() {
     [[ -f "$CONFIG_FILE" ]] || die "not configured. Run 'zen-sync init' first."
     source "$CONFIG_FILE"
-    : "${REMOTE_HOST:?}" "${REMOTE_USER:?}" "${LOCAL_PROFILE:?}" "${REMOTE_PROFILE:?}"
+    : "${MODE:?}" "${LOCAL_PROFILE:?}"
+
+    if [[ "$MODE" == "ssh" ]]; then
+        : "${REMOTE_HOST:?}" "${REMOTE_USER:?}" "${REMOTE_PROFILE:?}"
+    elif [[ "$MODE" == "r2" ]]; then
+        : "${R2_ACCOUNT_ID:?}" "${R2_ACCESS_KEY:?}" "${R2_SECRET_KEY:?}" "${R2_BUCKET:?}"
+        if [[ "${AGE_MODE:-keyfile}" == "keyfile" ]]; then
+            : "${AGE_KEY_PATH:?}"
+        fi
+    else
+        die "unknown mode: $MODE"
+    fi
+}
+
+cloud_config_json() {
+    printf '{"account_id":"%s","access_key":"%s","secret_key":"%s","bucket":"%s","age_key_path":"%s","age_mode":"%s","config_dir":"%s","profile":"%s"}' \
+        "$R2_ACCOUNT_ID" "$R2_ACCESS_KEY" "$R2_SECRET_KEY" "$R2_BUCKET" "${AGE_KEY_PATH:-}" "${AGE_MODE:-keyfile}" "$CONFIG_DIR" "$LOCAL_PROFILE"
 }
 
 find_local_profile() {
@@ -141,24 +156,66 @@ find_local_profile() {
     fi
 }
 
+# ─── Init ─────────────────────────────────────────────────────────────
+prompt() {
+    local label="$1" default="${2:-}"
+    if [[ -n "$default" ]]; then
+        printf "  ${PURPLE}›${R} ${WHITE}%s${R} ${D}[%s]${R} " "$label" "$default"
+    else
+        printf "  ${PURPLE}›${R} ${WHITE}%s${R} " "$label"
+    fi
+}
+
+secret_prompt() {
+    local label="$1"
+    printf "  ${PURPLE}›${R} ${WHITE}%s${R} " "$label"
+    read -rs val
+    printf "\n"
+    echo "$val"
+}
+
 cmd_init() {
     mkdir -p "$CONFIG_DIR"
-
     header "init"
 
-    read -rp "  Remote host (IP or hostname): " host
-    read -rp "  Remote user [$USER]: " user
-    user="${user:-$USER}"
+    printf "  ${WHITE}Choose sync mode:${R}\n\n"
+    printf "    ${PURPLE}❯${R} ${GREEN}1${R}  ${B}SSH${R}   ${D}Direct device-to-device (same network)${R}\n"
+    printf "    ${PURPLE}❯${R} ${GREEN}2${R}  ${B}R2${R}    ${D}Cloudflare R2 cloud (works anywhere)${R}\n"
+    printf "\n"
+    prompt "Mode" "1"
+    read -r mode_choice
+    local mode="ssh"
+    [[ "$mode_choice" == "2" ]] && mode="r2"
 
-    step "  ⟳" "Testing SSH..."
-    ssh -o ConnectTimeout=5 "$user@$host" "echo ok" >/dev/null 2>&1 \
-        || die "cannot connect to $user@$host"
-    ok "SSH connected"
+    printf "\n"
 
+    # Find local profile
     step "  ⟳" "Finding local profile..."
     local local_profile
     local_profile=$(find_local_profile)
     ok "Local: $(basename "$local_profile")"
+
+    printf "\n"
+
+    if [[ "$mode" == "ssh" ]]; then
+        init_ssh "$local_profile"
+    else
+        init_r2 "$local_profile"
+    fi
+}
+
+init_ssh() {
+    local local_profile="$1"
+
+    prompt "Remote host (IP or hostname)"; read -r host
+    prompt "Remote user" "$USER"; read -r user
+    user="${user:-$USER}"
+
+    printf "\n"
+    step "  ⟳" "Testing SSH..."
+    ssh -o ConnectTimeout=5 "$user@$host" "echo ok" >/dev/null 2>&1 \
+        || die "cannot connect to $user@$host"
+    ok "SSH connected"
 
     step "  ⟳" "Finding remote profile..."
     local remote_profile
@@ -167,6 +224,7 @@ cmd_init() {
     ok "Remote: $(basename "$remote_profile")"
 
     cat > "$CONFIG_FILE" <<CONF
+MODE="ssh"
 REMOTE_HOST="$host"
 REMOTE_USER="$user"
 LOCAL_PROFILE="$local_profile"
@@ -174,7 +232,97 @@ REMOTE_PROFILE="$remote_profile"
 CONF
 
     printf "\n"
-    ok "Config saved"
+    printf "  ${GREEN}${B}✓ Config saved${R} ${D}(SSH mode)${R}\n"
+    dim "  Use 'zen-sync push' or 'zen-sync pull' to start syncing"
+    printf "\n"
+}
+
+init_r2() {
+    local local_profile="$1"
+
+    command -v age >/dev/null 2>&1 || die "age not installed. Install it first (e.g. sudo pacman -S age)"
+
+    prompt "Cloudflare Account ID"; read -r account_id
+    prompt "R2 Access Key ID"; read -r access_key
+    prompt "R2 Secret Access Key"; read -r secret_key
+    prompt "R2 Bucket name"; read -r bucket
+
+    # Test connection
+    printf "\n"
+    step "  ⟳" "Testing R2 connection..."
+    local cloud_py
+    cloud_py=$(find_py "cloud.py")
+    local test_config
+    test_config=$(printf '{"account_id":"%s","access_key":"%s","secret_key":"%s","bucket":"%s"}' \
+        "$account_id" "$access_key" "$secret_key" "$bucket")
+    if python3 "$cloud_py" test "$test_config" >/dev/null 2>&1; then
+        ok "R2 connected"
+    else
+        die "could not connect to R2. Check your credentials and bucket name."
+    fi
+
+    # Encryption setup
+    printf "\n"
+    printf "  ${WHITE}Encryption method:${R}\n\n"
+    printf "    ${PURPLE}❯${R} ${GREEN}1${R}  ${B}Passphrase${R}   ${D}Same passphrase on all devices (recommended)${R}\n"
+    printf "    ${PURPLE}❯${R} ${GREEN}2${R}  ${B}Key file${R}     ${D}Generate key, copy to other devices${R}\n"
+    printf "\n"
+    prompt "Encryption" "1"; read -r enc_choice
+    local enc_mode="passphrase"
+    [[ "$enc_choice" == "2" ]] && enc_mode="keyfile"
+
+    local age_key="$CONFIG_DIR/age-key.txt"
+    printf "\n"
+
+    if [[ "$enc_mode" == "passphrase" ]]; then
+        local passphrase
+        printf "  ${PURPLE}›${R} ${WHITE}Passphrase${R} ${D}(hidden, use the same on all devices)${R} "
+        read -rs passphrase
+        printf "\n"
+        echo "$passphrase" > "$CONFIG_DIR/passphrase"
+        chmod 600 "$CONFIG_DIR/passphrase"
+        ok "Passphrase saved"
+        dim "  Use the same passphrase when setting up other devices"
+
+        cat > "$CONFIG_FILE" <<CONF
+MODE="r2"
+R2_ACCOUNT_ID="$account_id"
+R2_ACCESS_KEY="$access_key"
+R2_SECRET_KEY="$secret_key"
+R2_BUCKET="$bucket"
+AGE_MODE="passphrase"
+LOCAL_PROFILE="$local_profile"
+CONF
+    else
+        if [[ -f "$age_key" ]]; then
+            ok "Using existing age key"
+            printf "  ${YELLOW}Make sure this key is on all devices:${R}\n"
+            dim "  scp $age_key user@host:$age_key"
+        else
+            step "  🔑" "Generating age encryption key..."
+            age-keygen -o "$age_key" 2>/dev/null
+            chmod 600 "$age_key"
+            ok "Key saved to $age_key"
+            printf "\n"
+            printf "  ${YELLOW}Copy this key to your other device:${R}\n"
+            dim "  scp $age_key user@host:$age_key"
+        fi
+
+        cat > "$CONFIG_FILE" <<CONF
+MODE="r2"
+R2_ACCOUNT_ID="$account_id"
+R2_ACCESS_KEY="$access_key"
+R2_SECRET_KEY="$secret_key"
+R2_BUCKET="$bucket"
+AGE_MODE="keyfile"
+AGE_KEY_PATH="$age_key"
+LOCAL_PROFILE="$local_profile"
+CONF
+    fi
+    chmod 600 "$CONFIG_FILE"
+
+    printf "\n"
+    printf "  ${GREEN}${B}✓ Config saved${R} ${D}(R2 mode)${R}\n"
     dim "  Use 'zen-sync push' or 'zen-sync pull' to start syncing"
     printf "\n"
 }
@@ -198,12 +346,21 @@ cmd_push() {
         [[ "$arg" == "--restart" ]] && restart=true
     done
 
+    if [[ "$MODE" == "ssh" ]]; then
+        push_ssh "$restart"
+    else
+        push_r2 "$restart"
+    fi
+}
+
+push_ssh() {
+    local restart=$1
     local remote="$REMOTE_USER@$REMOTE_HOST"
 
     header "push"
     printf "  ${D}local${R} ${PURPLE}→${R} ${WHITE}${B}%s${R}\n\n" "$REMOTE_HOST"
 
-    $restart && zen_close_remote "$remote"
+    [[ "$restart" == "true" ]] && zen_close_remote "$remote"
 
     for f in "${SYNC_FILES[@]}"; do
         local src="$LOCAL_PROFILE/$f"
@@ -217,7 +374,28 @@ cmd_push() {
     done
 
     printf "\n"
-    $restart && zen_open_remote "$remote"
+    [[ "$restart" == "true" ]] && zen_open_remote "$remote"
+
+    printf "\n  ${GREEN}${B}✓ Sync complete${R}\n\n"
+}
+
+push_r2() {
+    local restart=$1
+
+    header "push"
+    printf "  ${D}local${R} ${PURPLE}→${R} ${WHITE}${B}R2 cloud${R}\n\n"
+
+    step "  ↑" "Encrypting and uploading..."
+    local cloud_py
+    cloud_py=$(find_py "cloud.py")
+    local result
+    result=$(python3 "$cloud_py" push "$(cloud_config_json)") || die "upload failed"
+
+    local raw_size enc_size
+    raw_size=$(echo "$result" | python3 -c "import sys,json; print(json.load(sys.stdin)['raw_size'])")
+    enc_size=$(echo "$result" | python3 -c "import sys,json; print(json.load(sys.stdin)['encrypted_size'])")
+
+    ok "Uploaded $(numfmt --to=iec "$raw_size") (encrypted: $(numfmt --to=iec "$enc_size"))"
 
     printf "\n  ${GREEN}${B}✓ Sync complete${R}\n\n"
 }
@@ -230,12 +408,21 @@ cmd_pull() {
         [[ "$arg" == "--restart" ]] && restart=true
     done
 
+    if [[ "$MODE" == "ssh" ]]; then
+        pull_ssh "$restart"
+    else
+        pull_r2 "$restart"
+    fi
+}
+
+pull_ssh() {
+    local restart=$1
     local remote="$REMOTE_USER@$REMOTE_HOST"
 
     header "pull"
     printf "  ${WHITE}${B}%s${R} ${PURPLE}←${R} ${D}local${R}\n\n" "$REMOTE_HOST"
 
-    $restart && zen_close_local
+    [[ "$restart" == "true" ]] && zen_close_local
 
     for f in "${SYNC_FILES[@]}"; do
         local dst="$LOCAL_PROFILE/$f"
@@ -247,7 +434,37 @@ cmd_pull() {
     done
 
     printf "\n"
-    $restart && zen_open_local
+    [[ "$restart" == "true" ]] && zen_open_local
+
+    printf "\n  ${GREEN}${B}✓ Sync complete${R}\n\n"
+}
+
+pull_r2() {
+    local restart=$1
+
+    header "pull"
+    printf "  ${WHITE}${B}R2 cloud${R} ${PURPLE}←${R} ${D}local${R}\n\n"
+
+    [[ "$restart" == "true" ]] && zen_close_local
+
+    step "  ↓" "Downloading and decrypting..."
+    local cloud_py
+    cloud_py=$(find_py "cloud.py")
+    local result
+    result=$(python3 "$cloud_py" pull "$(cloud_config_json)") || die "download failed"
+
+    local error
+    error=$(echo "$result" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('error',''))" 2>/dev/null)
+    if [[ -n "$error" ]]; then
+        die "$error"
+    fi
+
+    local size
+    size=$(echo "$result" | python3 -c "import sys,json; print(json.load(sys.stdin)['size'])")
+    ok "Downloaded $(numfmt --to=iec "$size")"
+
+    printf "\n"
+    [[ "$restart" == "true" ]] && zen_open_local
 
     printf "\n  ${GREEN}${B}✓ Sync complete${R}\n\n"
 }
@@ -272,7 +489,6 @@ for s in sorted(j['spaces'], key=lambda x: x.get('position', 99999)):
 
 cmd_status() {
     load_config
-    local remote="$REMOTE_USER@$REMOTE_HOST"
 
     header "status"
 
@@ -281,13 +497,41 @@ cmd_status() {
     read_spaces "$LOCAL_PROFILE/zen-sessions.jsonlz4"
 
     printf "\n"
-    printf "  ${PURPLE}${B}REMOTE${R} ${D}(%s)${R}\n" "$REMOTE_HOST"
-    printf "  ${D}%s${R}\n" "$REMOTE_PROFILE"
-    local tmp=$(mktemp)
-    scp -q "$remote:$REMOTE_PROFILE/zen-sessions.jsonlz4" "$tmp" 2>/dev/null \
-        && read_spaces "$tmp" \
-        || fail "could not read remote sessions"
-    rm -f "$tmp"
+
+    if [[ "$MODE" == "ssh" ]]; then
+        local remote="$REMOTE_USER@$REMOTE_HOST"
+        printf "  ${PURPLE}${B}REMOTE${R} ${D}(%s)${R}\n" "$REMOTE_HOST"
+        printf "  ${D}%s${R}\n" "$REMOTE_PROFILE"
+        local tmp=$(mktemp)
+        scp -q "$remote:$REMOTE_PROFILE/zen-sessions.jsonlz4" "$tmp" 2>/dev/null \
+            && read_spaces "$tmp" \
+            || fail "could not read remote sessions"
+        rm -f "$tmp"
+    else
+        printf "  ${PURPLE}${B}REMOTE${R} ${D}(R2 cloud)${R}\n"
+        local cloud_py
+        cloud_py=$(find_py "cloud.py")
+        local result
+        result=$(python3 "$cloud_py" status "$(cloud_config_json)" 2>/dev/null) || { fail "could not read remote"; printf "\n"; return; }
+
+        local error
+        error=$(echo "$result" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('error',''))" 2>/dev/null)
+        if [[ -n "$error" ]]; then
+            fail "$error"
+        else
+            local ts hostname
+            ts=$(echo "$result" | python3 -c "import sys,json; print(json.load(sys.stdin)['timestamp'])")
+            hostname=$(echo "$result" | python3 -c "import sys,json; print(json.load(sys.stdin)['hostname'])")
+            dim "  Last push: $ts from $hostname"
+
+            # Download and read spaces
+            local tmp_dir=$(mktemp -d)
+            python3 "$cloud_py" pull "$(cloud_config_json | python3 -c "import sys,json; d=json.load(sys.stdin); d['profile']='$tmp_dir'; print(json.dumps(d))")" >/dev/null 2>&1
+            [[ -f "$tmp_dir/zen-sessions.jsonlz4" ]] && read_spaces "$tmp_dir/zen-sessions.jsonlz4"
+            rm -rf "$tmp_dir"
+        fi
+    fi
+
     printf "\n"
 }
 
@@ -299,29 +543,42 @@ cmd_merge() {
         [[ "$arg" == "--restart" ]] && restart=true
     done
 
-    local remote="$REMOTE_USER@$REMOTE_HOST"
-    local script_dir
-    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
     header "merge"
-    printf "  ${D}local${R} ${PURPLE}⇄${R} ${WHITE}${B}%s${R}\n\n" "$REMOTE_HOST"
 
-    $restart && zen_close_local
+    if [[ "$MODE" == "ssh" ]]; then
+        local remote="$REMOTE_USER@$REMOTE_HOST"
+        printf "  ${D}local${R} ${PURPLE}⇄${R} ${WHITE}${B}%s${R}\n\n" "$REMOTE_HOST"
+    else
+        printf "  ${D}local${R} ${PURPLE}⇄${R} ${WHITE}${B}R2 cloud${R}\n\n"
+    fi
+
+    [[ "$restart" == "true" ]] && zen_close_local
 
     # Download remote files to temp dir
     local tmp_dir=$(mktemp -d)
-    step "  ↓" "Fetching remote sessions..."
-    scp -q "$remote:$REMOTE_PROFILE/zen-sessions.jsonlz4" "$tmp_dir/zen-sessions.jsonlz4" 2>/dev/null \
-        || die "could not download remote zen-sessions"
-    scp -q "$remote:$REMOTE_PROFILE/sessionstore-backups/recovery.jsonlz4" "$tmp_dir/recovery.jsonlz4" 2>/dev/null || true
+
+    if [[ "$MODE" == "ssh" ]]; then
+        local remote="$REMOTE_USER@$REMOTE_HOST"
+        step "  ↓" "Fetching remote sessions..."
+        scp -q "$remote:$REMOTE_PROFILE/zen-sessions.jsonlz4" "$tmp_dir/zen-sessions.jsonlz4" 2>/dev/null \
+            || die "could not download remote zen-sessions"
+        scp -q "$remote:$REMOTE_PROFILE/sessionstore-backups/recovery.jsonlz4" "$tmp_dir/recovery.jsonlz4" 2>/dev/null || true
+    else
+        step "  ↓" "Downloading from R2..."
+        local cloud_py
+        cloud_py=$(find_py "cloud.py")
+        python3 "$cloud_py" pull "$(cloud_config_json | python3 -c "import sys,json; d=json.load(sys.stdin); d['profile']='$tmp_dir'; print(json.dumps(d))")" >/dev/null \
+            || die "could not download from R2"
+        # Move recovery for merge.py
+        [[ -f "$tmp_dir/sessionstore-backups/recovery.jsonlz4" ]] && \
+            cp "$tmp_dir/sessionstore-backups/recovery.jsonlz4" "$tmp_dir/recovery.jsonlz4"
+    fi
     ok "Remote files downloaded"
 
     # Run merge
     step "  ⇄" "Merging sessions..."
-    local merge_py="$script_dir/merge.py"
-    [[ -f "$merge_py" ]] || merge_py="$(dirname "$(readlink -f "$0")")/merge.py"
-    [[ -f "$merge_py" ]] || merge_py="$HOME/.local/lib/zen-sync/merge.py"
-    [[ -f "$merge_py" ]] || die "merge.py not found. Re-run install."
+    local merge_py
+    merge_py=$(find_py "merge.py")
 
     local result
     result=$(python3 "$merge_py" "$LOCAL_PROFILE" "$tmp_dir") || die "merge failed"
@@ -347,7 +604,7 @@ cmd_merge() {
     rm -rf "$tmp_dir"
 
     printf "\n"
-    $restart && zen_open_local
+    [[ "$restart" == "true" ]] && zen_open_local
 
     printf "\n  ${GREEN}${B}✓ Merge complete${R}\n\n"
 }
