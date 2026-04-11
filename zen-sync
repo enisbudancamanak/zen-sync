@@ -127,9 +127,17 @@ cloud_config_json() {
         "$R2_ACCOUNT_ID" "$R2_ACCESS_KEY" "$R2_SECRET_KEY" "$R2_BUCKET" "${AGE_KEY_PATH:-}" "${AGE_MODE:-keyfile}" "$CONFIG_DIR" "$LOCAL_PROFILE"
 }
 
+find_zen_dir() {
+    local candidates=("$HOME/.config/zen" "$HOME/.zen")
+    for d in "${candidates[@]}"; do
+        [[ -d "$d" ]] && { echo "$d"; return; }
+    done
+    die "Zen Browser not found (tried ~/.config/zen and ~/.zen)"
+}
+
 find_local_profile() {
-    local zen_dir="$HOME/.zen"
-    [[ -d "$zen_dir" ]] || die "Zen Browser not found (~/.zen does not exist)"
+    local zen_dir
+    zen_dir=$(find_zen_dir)
 
     local profiles=()
     while IFS= read -r d; do
@@ -219,7 +227,7 @@ init_ssh() {
 
     step "  ⟳" "Finding remote profile..."
     local remote_profile
-    remote_profile=$(ssh "$user@$host" 'find ~/.zen -maxdepth 1 -type d -name "*.Default (release)" 2>/dev/null | head -1')
+    remote_profile=$(ssh "$user@$host" 'for d in ~/.config/zen ~/.zen; do [[ -d "$d" ]] && { find "$d" -maxdepth 1 -type d -name "*.Default (release)" 2>/dev/null | head -1; break; }; done')
     [[ -n "$remote_profile" ]] || die "no Zen profile found on remote"
     ok "Remote: $(basename "$remote_profile")"
 
