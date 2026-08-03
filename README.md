@@ -45,6 +45,8 @@ zen-sync init
 - **SSH mode.** SSH access between devices (ideally with key-based auth via `ssh-copy-id`)
 - **R2 mode.** Cloudflare R2 bucket + `age` for encryption
 
+> **Heads-up.** Zen is building native cross-device sync via Mozilla accounts, currently in the Twilight channel. It covers spaces, essentials and bookmarks, but not open tabs or sessions. zen-sync stays useful until that lands in stable.
+
 ## Sync modes
 
 During `zen-sync init`, you choose how devices communicate:
