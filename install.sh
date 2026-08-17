@@ -18,4 +18,4 @@ if ! echo "$PATH" | grep -q "$BIN_DIR"; then
 fi
 
 echo "Run 'zen-sync init' to get started."
-echo "For R2 cloud mode, also install: age (e.g. sudo pacman -S age)"
+echo "For R2 cloud mode, also install: age (e.g. brew install age / sudo pacman -S age)"

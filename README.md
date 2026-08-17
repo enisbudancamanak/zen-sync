@@ -3,7 +3,7 @@
   <p align="center">Sync Zen Browser spaces, tabs & sessions across devices</p>
   <p align="center">
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
-    <img src="https://img.shields.io/badge/platform-Linux-yellow.svg" alt="Platform: Linux">
+    <img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS-yellow.svg" alt="Platform: Linux | macOS">
     <img src="https://img.shields.io/badge/Zen_Browser-purple.svg" alt="Zen Browser">
   </p>
 </p>
@@ -19,7 +19,7 @@
 
 ---
 
-> **Linux only.** Tested on Arch Linux with Wayland. May work on other distros but is not tested.
+> **Linux & macOS.** Tested on Arch Linux with Wayland and on macOS. May work on other distros but is not tested.
 
 Zen Browser doesn't sync spaces or tabs across devices yet. **zen-sync** fills that gap. Push your entire browsing session from one machine to another in seconds.
 
@@ -39,9 +39,9 @@ zen-sync init
 
 ### Requirements
 
-- Linux (tested on Arch Linux with Wayland/Hyprland)
+- Linux (tested on Arch Linux with Wayland/Hyprland) or macOS
 - Zen Browser (same version on both devices)
-- `python3` + `liblz4` (for `merge` and `status`)
+- `python3` + `liblz4` (for `merge` and `status`) — on macOS: `brew install lz4`
 - **SSH mode.** SSH access between devices (ideally with key-based auth via `ssh-copy-id`)
 - **R2 mode.** Cloudflare R2 bucket + `age` for encryption
 
@@ -68,7 +68,7 @@ During `zen-sync init`, you choose how devices communicate:
 2. Go to **R2 Object Storage** and create a bucket (e.g. `zen-sync`)
 3. Go to **R2 > Manage R2 API Tokens > Create API Token** with Read & Write permissions
 4. Note your **Account ID** (visible in the dashboard URL), **Access Key ID**, and **Secret Access Key**
-5. Install `age`: `sudo pacman -S age` (Arch)
+5. Install `age`: `sudo pacman -S age` (Arch) / `brew install age` (macOS)
 6. Run `zen-sync init`, select R2 mode, and enter your credentials
 7. On the second device, run `zen-sync init` with the same credentials and copy over the age key file
 
@@ -148,8 +148,8 @@ Merge reads both `zen-sessions.jsonlz4` files, combines missing spaces and tabs,
 
 > Built for a specific setup, may need adjustments for yours.
 
-- **Linux only.** macOS/Windows store Zen profiles in different locations
-- **Wayland.** `--restart` reopen uses `WAYLAND_DISPLAY=wayland-1`. X11 or other compositors may need adjustment
+- **Linux & macOS only.** Windows stores Zen profiles in a different location and is not supported
+- **Wayland.** On Linux, `--restart` reopen uses `WAYLAND_DISPLAY=wayland-1`. X11 or other compositors may need adjustment (macOS uses `open -a Zen`)
 - **Single remote.** One remote device per config (SSH mode)
 - **Push/pull overwrites.** Last push/pull wins, use `merge` to combine
 - **Same Zen version.** Both devices should run the same version

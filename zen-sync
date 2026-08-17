@@ -4,6 +4,7 @@ set -euo pipefail
 # ─── Config ───────────────────────────────────────────────────────────
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/zen-sync"
 CONFIG_FILE="$CONFIG_DIR/config"
+OS_NAME="$(uname -s)"
 
 # ─── Colors & UI ─────────────────────────────────────────────────────
 R="\033[0m"
@@ -52,24 +53,42 @@ usage() {
 }
 
 # ─── Zen process management ──────────────────────────────────────────
+# Process name: zen-bin on Linux, zen on macOS. Launch: zen-browser / open -a Zen.
+zen_proc_name() {
+    if [[ "${1:-$OS_NAME}" == "Darwin" ]]; then echo "zen"; else echo "zen-bin"; fi
+}
+
+remote_os() {
+    ssh -o ConnectTimeout=5 "$1" 'uname -s' 2>/dev/null || echo "Linux"
+}
+
 zen_close_remote() {
     local remote="$1"
-    if ssh "$remote" 'pgrep -x zen-bin >/dev/null 2>&1'; then
+    local ros proc
+    ros=$(remote_os "$remote")
+    proc=$(zen_proc_name "$ros")
+    if ssh "$remote" "pgrep -x $proc >/dev/null 2>&1"; then
         step "  ◼" "Closing Zen on remote..."
-        ssh -o ConnectTimeout=5 "$remote" 'kill -SIGTERM $(pgrep -x zen-bin | head -1) 2>/dev/null; exit 0' || true
+        ssh -o ConnectTimeout=5 "$remote" "kill -SIGTERM \$(pgrep -x $proc | head -1) 2>/dev/null; exit 0" || true
         sleep 5
     fi
 }
 
 zen_open_remote() {
     local remote="$1"
+    local ros
+    ros=$(remote_os "$remote")
     step "  ▶" "Reopening Zen on remote..."
-    ssh "$remote" 'WAYLAND_DISPLAY=wayland-1 DISPLAY=:0 XDG_RUNTIME_DIR=/run/user/$(id -u) nohup zen-browser >/dev/null 2>&1 </dev/null &; exit 0' || true
+    if [[ "$ros" == "Darwin" ]]; then
+        ssh "$remote" 'open -a Zen; exit 0' || true
+    else
+        ssh "$remote" 'WAYLAND_DISPLAY=wayland-1 DISPLAY=:0 XDG_RUNTIME_DIR=/run/user/$(id -u) nohup zen-browser >/dev/null 2>&1 </dev/null &; exit 0' || true
+    fi
 }
 
 zen_close_local() {
     local pids
-    pids=$(pgrep -x zen-bin 2>/dev/null || true)
+    pids=$(pgrep -x "$(zen_proc_name)" 2>/dev/null || true)
     if [[ -n "$pids" ]]; then
         step "  ◼" "Closing Zen locally..."
         kill -SIGTERM $(echo "$pids" | head -1) 2>/dev/null || true
@@ -79,7 +98,11 @@ zen_close_local() {
 
 zen_open_local() {
     step "  ▶" "Reopening Zen locally..."
-    nohup zen-browser >/dev/null 2>&1 &
+    if [[ "$OS_NAME" == "Darwin" ]]; then
+        open -a Zen
+    else
+        nohup zen-browser >/dev/null 2>&1 &
+    fi
 }
 
 # ─── Resolve script directory ────────────────────────────────────────
@@ -127,12 +150,29 @@ cloud_config_json() {
         "$R2_ACCOUNT_ID" "$R2_ACCESS_KEY" "$R2_SECRET_KEY" "$R2_BUCKET" "${AGE_KEY_PATH:-}" "${AGE_MODE:-keyfile}" "$CONFIG_DIR" "$LOCAL_PROFILE"
 }
 
+human_size() {
+    if command -v numfmt >/dev/null 2>&1; then
+        numfmt --to=iec "$1"
+    else
+        python3 -c "
+n = float($1)
+for u in ('', 'K', 'M', 'G', 'T'):
+    if n < 1024: print(f'{n:.0f}{u}' if u == '' else f'{n:.1f}{u}'); break
+    n /= 1024
+"
+    fi
+}
+
 find_zen_dir() {
-    local candidates=("$HOME/.config/zen" "$HOME/.zen")
+    local candidates=(
+        "$HOME/Library/Application Support/zen/Profiles"
+        "$HOME/.config/zen"
+        "$HOME/.zen"
+    )
     for d in "${candidates[@]}"; do
         [[ -d "$d" ]] && { echo "$d"; return; }
     done
-    die "Zen Browser not found (tried ~/.config/zen and ~/.zen)"
+    die "Zen Browser not found (tried ~/Library/Application Support/zen/Profiles, ~/.config/zen and ~/.zen)"
 }
 
 find_local_profile() {
@@ -227,7 +267,7 @@ init_ssh() {
 
     step "  ⟳" "Finding remote profile..."
     local remote_profile
-    remote_profile=$(ssh "$user@$host" 'for d in ~/.config/zen ~/.zen; do [[ -d "$d" ]] && { find "$d" -maxdepth 1 -type d -name "*.Default (release)" 2>/dev/null | head -1; break; }; done')
+    remote_profile=$(ssh "$user@$host" 'for d in "$HOME/Library/Application Support/zen/Profiles" ~/.config/zen ~/.zen; do [[ -d "$d" ]] && { find "$d" -maxdepth 1 -type d -name "*.Default (release)" 2>/dev/null | head -1; break; }; done')
     [[ -n "$remote_profile" ]] || die "no Zen profile found on remote"
     ok "Remote: $(basename "$remote_profile")"
 
@@ -248,7 +288,7 @@ CONF
 init_r2() {
     local local_profile="$1"
 
-    command -v age >/dev/null 2>&1 || die "age not installed. Install it first (e.g. sudo pacman -S age)"
+    command -v age >/dev/null 2>&1 || die "age not installed. Install it first (e.g. brew install age / sudo pacman -S age)"
 
     prompt "Cloudflare Account ID"; read -r account_id
     prompt "R2 Access Key ID"; read -r access_key
@@ -403,7 +443,7 @@ push_r2() {
     raw_size=$(echo "$result" | python3 -c "import sys,json; print(json.load(sys.stdin)['raw_size'])")
     enc_size=$(echo "$result" | python3 -c "import sys,json; print(json.load(sys.stdin)['encrypted_size'])")
 
-    ok "Uploaded $(numfmt --to=iec "$raw_size") (encrypted: $(numfmt --to=iec "$enc_size"))"
+    ok "Uploaded $(human_size "$raw_size") (encrypted: $(human_size "$enc_size"))"
 
     printf "\n  ${GREEN}${B}✓ Sync complete${R}\n\n"
 }
@@ -469,7 +509,7 @@ pull_r2() {
 
     local size
     size=$(echo "$result" | python3 -c "import sys,json; print(json.load(sys.stdin)['size'])")
-    ok "Downloaded $(numfmt --to=iec "$size")"
+    ok "Downloaded $(human_size "$size")"
 
     printf "\n"
     [[ "$restart" == "true" ]] && zen_open_local
@@ -480,8 +520,16 @@ pull_r2() {
 # ─── Status ───────────────────────────────────────────────────────────
 read_spaces() {
     python3 -c "
-import ctypes, json, struct, sys
-lib = ctypes.CDLL('liblz4.so.1')
+import ctypes, ctypes.util, json, struct, sys
+def load_lz4():
+    names = [ctypes.util.find_library('lz4'), 'liblz4.so.1', 'liblz4.so',
+             'liblz4.dylib', '/opt/homebrew/lib/liblz4.dylib', '/usr/local/lib/liblz4.dylib']
+    for n in names:
+        if not n: continue
+        try: return ctypes.CDLL(n)
+        except OSError: pass
+    sys.exit('liblz4 not found (install lz4: brew install lz4 / sudo pacman -S lz4)')
+lib = load_lz4()
 with open(sys.argv[1], 'rb') as f:
     data = f.read()
 size = struct.unpack('<I', data[8:12])[0]

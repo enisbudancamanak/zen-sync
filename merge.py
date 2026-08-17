@@ -2,6 +2,7 @@
 """Merge zen-sessions and sessionstore from two Zen Browser profiles."""
 
 import ctypes
+import ctypes.util
 import json
 import struct
 import sys
@@ -11,10 +12,22 @@ from datetime import datetime
 
 
 def load_lz4():
-    try:
-        return ctypes.CDLL("liblz4.so.1")
-    except OSError:
-        return ctypes.CDLL("liblz4.so")
+    candidates = [
+        ctypes.util.find_library("lz4"),
+        "liblz4.so.1",
+        "liblz4.so",
+        "liblz4.dylib",
+        "/opt/homebrew/lib/liblz4.dylib",
+        "/usr/local/lib/liblz4.dylib",
+    ]
+    for name in candidates:
+        if not name:
+            continue
+        try:
+            return ctypes.CDLL(name)
+        except OSError:
+            continue
+    sys.exit("error: liblz4 not found (install lz4: brew install lz4 / sudo pacman -S lz4)")
 
 
 def read_mozlz4(path):
