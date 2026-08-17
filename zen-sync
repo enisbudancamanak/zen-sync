@@ -154,12 +154,13 @@ human_size() {
     if command -v numfmt >/dev/null 2>&1; then
         numfmt --to=iec "$1"
     else
-        python3 -c "
-n = float($1)
-for u in ('', 'K', 'M', 'G', 'T'):
-    if n < 1024: print(f'{n:.0f}{u}' if u == '' else f'{n:.1f}{u}'); break
+        python3 -c '
+import sys
+n = float(sys.argv[1])
+for u in ("", "K", "M", "G", "T", "P", "E"):
+    if n < 1024 or u == "E": print(f"{n:.0f}{u}" if u == "" else f"{n:.1f}{u}"); break
     n /= 1024
-"
+' "$1"
     fi
 }
 
